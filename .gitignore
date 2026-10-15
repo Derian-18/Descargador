@@ -1,0 +1,13 @@
+# Entorno virtual
+venv/
+
+# Descargas (videos y MP3 pesados)
+downloads/
+
+# Python
+__pycache__/
+*.pyc
+
+# Restos de yt-dlp
+*.part
+*.ytdl
