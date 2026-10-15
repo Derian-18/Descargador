@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 
 import yt_dlp
@@ -21,6 +23,40 @@ class VideoDownloaderSinDuplicados:
         ruta = Path(nueva_ruta)
         ruta.mkdir(parents=True, exist_ok=True)
         self.download_path = ruta
+
+    # ------------------------------------------------------------------
+    # BINARIOS INCLUIDOS (ffmpeg y Deno dentro del ejecutable)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _carpeta_bin():
+        """Carpeta con los binarios incluidos. Solo existe en el ejecutable."""
+        base = getattr(sys, "_MEIPASS", None)
+        return Path(base) / "bin" if base else None
+
+    def _opciones_binarios(self):
+        """Si corre como ejecutable, hace que yt-dlp use el ffmpeg y el Deno
+        incluidos. Corriendo desde Python normal, no cambia nada."""
+        opciones = {}
+        carpeta = self._carpeta_bin()
+        if carpeta is None or not carpeta.exists():
+            return opciones
+
+        ext = ".exe" if os.name == "nt" else ""
+        for nombre in ("ffmpeg", "ffprobe", "deno"):
+            ruta = carpeta / (nombre + ext)
+            if ruta.exists() and os.name != "nt":
+                try:
+                    ruta.chmod(0o755)
+                except OSError:
+                    pass
+
+        if (carpeta / ("ffmpeg" + ext)).exists():
+            opciones['ffmpeg_location'] = str(carpeta)
+
+        deno = carpeta / ("deno" + ext)
+        if deno.exists():
+            opciones['js_runtimes'] = {'deno': {'path': str(deno)}}
+        return opciones
 
     # ------------------------------------------------------------------
     # LOG / ERRORES
@@ -89,6 +125,8 @@ class VideoDownloaderSinDuplicados:
             'progress_hooks': [self._hook_progreso_audio],
         }
 
+        ydl_opts.update(self._opciones_binarios())
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -128,6 +166,8 @@ class VideoDownloaderSinDuplicados:
             'progress_hooks': [self._hook_progreso_audio],
         }
 
+        ydl_opts.update(self._opciones_binarios())
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -158,6 +198,8 @@ class VideoDownloaderSinDuplicados:
             'logger': self._YdlLogger(self),
             'progress_hooks': [self._hook_progreso],
         }
+
+        ydl_opts.update(self._opciones_binarios())
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

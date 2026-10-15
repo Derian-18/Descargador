@@ -1,0 +1,138 @@
+name: Build ejecutables
+
+on:
+  # Se ejecuta al subir una etiqueta tipo v1.0.0 (y crea un Release)
+  push:
+    tags:
+      - "v*"
+  # También se puede lanzar a mano desde la pestaña Actions
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build en ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            archivo: Descargador-windows.exe
+            sep: ";"
+            flags: --windowed
+          # 22.04 y no "latest": el binario funciona en más distribuciones
+          - os: ubuntu-22.04
+            archivo: Descargador-linux.tar.gz
+            sep: ":"
+            flags: ""
+          # macos-latest es Apple Silicon (arm64)
+          - os: macos-latest
+            archivo: Descargador-macos.tar.gz
+            sep: ":"
+            flags: ""
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Deno se copia después dentro del ejecutable
+      - name: Instalar Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Instalar dependencias
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller static-ffmpeg "yt-dlp[default]"
+
+      # Junta ffmpeg, ffprobe y Deno en la carpeta "vendor"
+      - name: Preparar ffmpeg y Deno
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import pathlib
+          import shutil
+
+          import static_ffmpeg.run as sf
+
+          destino = pathlib.Path("vendor")
+          destino.mkdir(exist_ok=True)
+
+          ffmpeg, ffprobe = sf.get_or_fetch_platform_executables_else_raise()
+          deno = shutil.which("deno")
+          assert deno, "No se encontró Deno"
+
+          for origen in (ffmpeg, ffprobe, deno):
+              shutil.copy2(origen, destino / pathlib.Path(origen).name)
+          EOF
+          ls -la vendor
+
+      - name: Compilar con PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --onefile --name Descargador ${{ matrix.flags }} \
+            --add-data "vendor${{ matrix.sep }}bin" \
+            --collect-submodules yt_dlp \
+            --collect-all yt_dlp_ejs \
+            main.py
+
+      # Windows: se deja el .exe. Linux y macOS: .tar.gz para conservar
+      # el permiso de ejecución (así no hace falta chmod +x)
+      - name: Empaquetar el resultado
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv Descargador.exe "${{ matrix.archivo }}"
+          else
+            tar -czf "${{ matrix.archivo }}" Descargador
+          fi
+          ls -la
+
+      - name: Guardar el ejecutable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archivo }}
+          path: dist/${{ matrix.archivo }}
+
+  release:
+    name: Publicar Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Bajar los ejecutables
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Crear el Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            Incluye ffmpeg y Deno: no hace falta instalar nada más.
+
+            **Windows** (`Descargador-windows.exe`): al abrirlo puede salir la
+            advertencia de SmartScreen porque el programa no está firmado.
+            Pulsa "Más información" y luego "Ejecutar de todas formas".
+
+            **Linux** (`Descargador-linux.tar.gz`): descomprime con
+            `tar -xzf Descargador-linux.tar.gz` y ejecuta `./Descargador`.
+
+            **macOS** (`Descargador-macos.tar.gz`, Apple Silicon): descomprime
+            con `tar -xzf Descargador-macos.tar.gz`. Como no está firmado,
+            la primera vez ejecuta `xattr -d com.apple.quarantine Descargador`
+            y luego `./Descargador`.
